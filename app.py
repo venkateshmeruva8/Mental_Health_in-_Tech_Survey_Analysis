@@ -133,7 +133,8 @@ def load_and_clean_data(file_path="survey.csv"):
 
     df_clean = raw_df.copy()
 
-    # 1. Clean Age column (valid age between 18 and 100)
+    # 1. Clean Age column (valid age between 18 and 100, invalid become NaN)
+    df_clean["Age"] = pd.to_numeric(df_clean["Age"], errors="coerce")
     df_clean["Age"] = df_clean["Age"].where(
         df_clean["Age"].between(18, 100),
         np.nan
@@ -173,8 +174,29 @@ def load_and_clean_data(file_path="survey.csv"):
 
 
 # ---------------------------------------------------------
-# HELPER FUNCTIONS FOR CHARTS
+# DYNAMIC STATISTICAL HELPER FUNCTIONS
 # ---------------------------------------------------------
+
+def get_group_treatment_stats(df, column_name, group_value):
+    """
+    Calculates dynamic percentage of Yes / No treatment for a specific category
+    within the currently filtered dataframe.
+    """
+    subset = df[df[column_name] == group_value].dropna(subset=["treatment"])
+    total_count = len(subset)
+    if total_count == 0:
+        return None, None, 0
+    yes_count = (subset["treatment"] == "Yes").sum()
+    no_count = (subset["treatment"] == "No").sum()
+    pct_yes = (yes_count / total_count) * 100
+    pct_no = (no_count / total_count) * 100
+    return pct_yes, pct_no, total_count
+
+
+def format_pct(val):
+    """Formats numeric percentage or returns 'N/A' if None."""
+    return f"{val:.1f}%" if val is not None else "N/A"
+
 
 def plot_crosstab_percentage(df, index_col, columns_col="treatment", title="", xlabel="", legend_title="Treatment", rotation=0, palette=["#64748B", "#3B82F6"]):
     """Generates a percentage-based normalized stacked/grouped bar chart."""
@@ -226,8 +248,27 @@ if raw_df is None or df_clean is None:
 
 
 # ---------------------------------------------------------
-# SIDEBAR NAVIGATION & FILTERS
+# SIDEBAR NAVIGATION & FILTERS WITH RELIABLE RESET
 # ---------------------------------------------------------
+
+# Default filter state initialization
+DEFAULT_FILTERS = {
+    "sb_gender": "All",
+    "sb_age_group": "All",
+    "sb_fam_history": "All",
+    "sb_treatment": "All",
+    "sb_country": "All",
+}
+
+for k, v in DEFAULT_FILTERS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+def reset_all_filters():
+    """Callback ensuring every filter session key is reset to its default state."""
+    for key, default_val in DEFAULT_FILTERS.items():
+        st.session_state[key] = default_val
+
 
 st.sidebar.title("🧠 Navigation")
 menu = st.sidebar.radio(
@@ -249,26 +290,20 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("🔍 Interactive Filters")
 st.sidebar.caption("Apply filters to explore specific demographics or employment subsets across the charts.")
 
-# Gender filter
+# Filter options
 gender_options = ["All"] + sorted([g for g in df_clean["Gender_Clean"].dropna().unique()])
-selected_gender = st.sidebar.selectbox("Gender", gender_options, index=0)
-
-# Age Group filter
 age_group_options = ["All"] + ["18-25", "26-35", "36-45", "46-55", "56-65", "66+"]
-selected_age_group = st.sidebar.selectbox("Age Group", age_group_options, index=0)
-
-# Family History filter
 fam_history_options = ["All"] + sorted([f for f in df_clean["family_history"].dropna().unique()])
-selected_fam_history = st.sidebar.selectbox("Family History", fam_history_options, index=0)
-
-# Treatment filter
 treatment_options = ["All"] + sorted([t for t in df_clean["treatment"].dropna().unique()])
-selected_treatment = st.sidebar.selectbox("Treatment Sought", treatment_options, index=0)
-
-# Country filter (Top countries + All)
 top_countries = df_clean["Country"].value_counts().head(8).index.tolist()
 country_options = ["All"] + top_countries
-selected_country = st.sidebar.selectbox("Country (Top / All)", country_options, index=0)
+
+# Filter widgets bound to session state keys
+selected_gender = st.sidebar.selectbox("Gender", gender_options, key="sb_gender")
+selected_age_group = st.sidebar.selectbox("Age Group", age_group_options, key="sb_age_group")
+selected_fam_history = st.sidebar.selectbox("Family History", fam_history_options, key="sb_fam_history")
+selected_treatment = st.sidebar.selectbox("Treatment Sought", treatment_options, key="sb_treatment")
+selected_country = st.sidebar.selectbox("Country (Top / All)", country_options, key="sb_country")
 
 # Apply filters
 filtered_df = df_clean.copy()
@@ -284,12 +319,12 @@ if selected_treatment != "All":
 if selected_country != "All":
     filtered_df = filtered_df[filtered_df["Country"] == selected_country]
 
-# Show active filter stats
+# Active filter statistics
 pct_active = (len(filtered_df) / len(df_clean)) * 100
 st.sidebar.info(f"**Filtered Records:** {len(filtered_df):,} of {len(df_clean):,} ({pct_active:.1f}%)")
 
-if st.sidebar.button("Reset All Filters"):
-    st.rerun()
+# Reset button with dedicated callback
+st.sidebar.button("Reset All Filters", on_click=reset_all_filters)
 
 st.sidebar.markdown("---")
 st.sidebar.caption("Internship Project: Mental Health in Tech Survey Analysis")
@@ -386,11 +421,14 @@ if menu == "Overview":
     view_mode = st.radio("Select View:", ["Cleaned Dataset Preview", "Raw Dataset Preview", "Dataset Summary Statistics"], horizontal=True)
     
     if view_mode == "Cleaned Dataset Preview":
-        st.dataframe(filtered_df.head(15), use_container_width=True)
-        st.caption(f"Showing first 15 of {len(filtered_df)} records.")
+        if len(filtered_df) == 0:
+            st.warning("⚠️ No records match the active filter criteria. Reset filters to view data.")
+        else:
+            st.dataframe(filtered_df.head(15), use_container_width=True)
+            st.caption(f"Showing first {min(15, len(filtered_df))} of {len(filtered_df):,} records.")
     elif view_mode == "Raw Dataset Preview":
         st.dataframe(raw_df.head(15), use_container_width=True)
-        st.caption(f"Showing first 15 of {len(raw_df)} raw records.")
+        st.caption(f"Showing first 15 of {len(raw_df):,} raw records.")
     else:
         st.dataframe(df_clean.describe(include="all").T, use_container_width=True)
 
@@ -455,6 +493,7 @@ elif menu == "Data Quality":
         ax.set_xlim(0, 100)
         plt.tight_layout()
         st.pyplot(fig)
+        plt.close(fig)
 
     st.markdown(
         """
@@ -498,6 +537,10 @@ elif menu == "Demographics":
     st.subheader("👥 Demographic Characteristics")
     st.write("Exploration of age, gender, and geographic distribution across the surveyed tech workers.")
 
+    if len(filtered_df) == 0:
+        st.warning("⚠️ No records match the selected filter criteria. Please adjust or reset the sidebar filters.")
+        st.stop()
+
     # Demographic Metrics
     m1, m2, m3, m4 = st.columns(4)
     valid_ages = filtered_df["Age"].dropna()
@@ -517,21 +560,25 @@ elif menu == "Demographics":
         with col_age1:
             st.markdown("#### Age Distribution")
             fig, ax = plt.subplots(figsize=(7, 4.5))
-            sns.histplot(
-                data=filtered_df,
-                x="Age",
-                bins=20,
-                kde=True,
-                color="#3B82F6",
-                edgecolor="black",
-                linewidth=0.6,
-                ax=ax,
-            )
-            ax.set_title("Age Distribution of Respondents (18–100)", fontweight="bold")
-            ax.set_xlabel("Age (Years)")
-            ax.set_ylabel("Number of Respondents")
+            if not valid_ages.empty:
+                sns.histplot(
+                    data=filtered_df,
+                    x="Age",
+                    bins=min(20, max(5, valid_ages.nunique())),
+                    kde=(valid_ages.nunique() > 3),
+                    color="#3B82F6",
+                    edgecolor="black",
+                    linewidth=0.6,
+                    ax=ax,
+                )
+                ax.set_title("Age Distribution of Respondents (18–100)", fontweight="bold")
+                ax.set_xlabel("Age (Years)")
+                ax.set_ylabel("Number of Respondents")
+            else:
+                ax.text(0.5, 0.5, "No valid Age records", ha="center", va="center")
             plt.tight_layout()
             st.pyplot(fig)
+            plt.close(fig)
 
         with col_age2:
             st.markdown("#### Age Group Breakdown")
@@ -552,23 +599,31 @@ elif menu == "Demographics":
             for p in ax.patches:
                 h = p.get_height()
                 if h > 0:
-                    ax.annotate(f"{h}", (p.get_x() + p.get_width() / 2, h + 5), ha="center", fontsize=9)
+                    ax.annotate(f"{h}", (p.get_x() + p.get_width() / 2, h + 2), ha="center", fontsize=9)
             plt.tight_layout()
             st.pyplot(fig)
+            plt.close(fig)
 
-        st.caption("The tech sample is concentrated heavily in the 26–35 age range, followed by 36–45.")
+        # Dynamic Age Insight
+        if not valid_ages.empty:
+            age_grp_counts = filtered_df["Age_Group"].value_counts()
+            top_grp = age_grp_counts.index[0] if len(age_grp_counts) > 0 else "N/A"
+            top_grp_pct = (age_grp_counts.iloc[0] / len(filtered_df) * 100) if len(age_grp_counts) > 0 else 0
+            st.caption(f"In the currently filtered data, the largest age bracket is **{top_grp}**, representing **{top_grp_pct:.1f}%** of respondents.")
 
     with tab2:
         col_gen1, col_gen2 = st.columns([1.2, 1])
         with col_gen1:
             st.markdown("#### Standardized Gender Distribution")
             fig, ax = plt.subplots(figsize=(7, 4.5))
-            gender_order = filtered_df["Gender_Clean"].value_counts().index
+            gender_order = [g for g in ["Male", "Female", "Other"] if g in filtered_df["Gender_Clean"].values]
+            if not gender_order:
+                gender_order = filtered_df["Gender_Clean"].dropna().unique().tolist()
             sns.countplot(
                 data=filtered_df,
                 x="Gender_Clean",
                 order=gender_order,
-                palette=["#3B82F6", "#EC4899", "#8B5CF6"],
+                palette=["#3B82F6", "#EC4899", "#8B5CF6"][:len(gender_order)],
                 edgecolor="black",
                 linewidth=0.6,
                 ax=ax,
@@ -579,9 +634,10 @@ elif menu == "Demographics":
             for p in ax.patches:
                 h = p.get_height()
                 if h > 0:
-                    ax.annotate(f"{h}", (p.get_x() + p.get_width() / 2, h + 10), ha="center", fontsize=9)
+                    ax.annotate(f"{h}", (p.get_x() + p.get_width() / 2, h + 2), ha="center", fontsize=9)
             plt.tight_layout()
             st.pyplot(fig)
+            plt.close(fig)
 
         with col_gen2:
             st.markdown("#### Gender Proportions")
@@ -589,36 +645,47 @@ elif menu == "Demographics":
             gender_pct = (gender_counts / len(filtered_df) * 100).round(1)
             gender_summary = pd.DataFrame({"Count": gender_counts, "Percentage (%)": gender_pct})
             st.dataframe(gender_summary, use_container_width=True)
+            
+            # Dynamic Gender Insight
+            dyn_m_pct = (filtered_df["Gender_Clean"] == "Male").mean() * 100
+            dyn_f_pct = (filtered_df["Gender_Clean"] == "Female").mean() * 100
+            dyn_o_pct = (filtered_df["Gender_Clean"] == "Other").mean() * 100
             st.markdown(
-                """
+                f"""
                 <div class="insight-card">
-                    The tech workforce represented in this survey is predominantly male (~79%),
-                    with females representing ~19.6% and other genders ~1.4%.
+                    <strong>Dynamic Gender Breakdown:</strong><br>
+                    • Male: {dyn_m_pct:.1f}% ({ (filtered_df['Gender_Clean'] == 'Male').sum():,})<br>
+                    • Female: {dyn_f_pct:.1f}% ({ (filtered_df['Gender_Clean'] == 'Female').sum():,})<br>
+                    • Other: {dyn_o_pct:.1f}% ({ (filtered_df['Gender_Clean'] == 'Other').sum():,})
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
     with tab3:
-        st.markdown("#### Top 10 Countries by Number of Respondents")
-        top10_countries = filtered_df["Country"].value_counts().head(10)
-        fig, ax = plt.subplots(figsize=(9, 4.8))
-        sns.barplot(
-            x=top10_countries.values,
-            y=top10_countries.index,
-            palette="viridis",
-            edgecolor="black",
-            linewidth=0.6,
-            ax=ax,
-        )
-        ax.set_title("Top 10 Countries Represented in Survey", fontweight="bold")
-        ax.set_xlabel("Number of Respondents")
-        ax.set_ylabel("Country")
-        for p in ax.patches:
-            w = p.get_width()
-            ax.annotate(f"{int(w)}", (w + 5, p.get_y() + p.get_height() / 2), va="center", fontsize=9)
-        plt.tight_layout()
-        st.pyplot(fig)
+        st.markdown("#### Top Countries by Number of Respondents")
+        top_k_countries = filtered_df["Country"].value_counts().head(10)
+        if not top_k_countries.empty:
+            fig, ax = plt.subplots(figsize=(9, 4.8))
+            sns.barplot(
+                x=top_k_countries.values,
+                y=top_k_countries.index,
+                palette="viridis",
+                edgecolor="black",
+                linewidth=0.6,
+                ax=ax,
+            )
+            ax.set_title("Top Countries in Selected Subset", fontweight="bold")
+            ax.set_xlabel("Number of Respondents")
+            ax.set_ylabel("Country")
+            for p in ax.patches:
+                w = p.get_width()
+                ax.annotate(f"{int(w)}", (w + 1, p.get_y() + p.get_height() / 2), va="center", fontsize=9)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.info("No country records available in current filtered dataset.")
 
 
 # =========================================================
@@ -643,6 +710,10 @@ elif menu == "Mental Health & Treatment":
         unsafe_allow_html=True,
     )
 
+    if len(filtered_df) == 0:
+        st.warning("⚠️ No records match the selected filter criteria. Please adjust or reset the sidebar filters.")
+        st.stop()
+
     chart_mode = st.radio("Display Metric:", ["Percentage of Group (%)", "Absolute Count"], horizontal=True)
 
     # 1. Family History vs Treatment
@@ -661,6 +732,7 @@ elif menu == "Mental Health & Treatment":
                 palette=["#94A3B8", "#2563EB"]
             )
             st.pyplot(fig_fam)
+            plt.close(fig_fam)
         else:
             fig, ax = plt.subplots(figsize=(7, 4.2))
             sns.countplot(
@@ -677,19 +749,28 @@ elif menu == "Mental Health & Treatment":
             ax.set_ylabel("Count")
             plt.tight_layout()
             st.pyplot(fig)
+            plt.close(fig)
             ct_fam = pd.crosstab(filtered_df["family_history"], filtered_df["treatment"])
 
     with col_f2:
         st.markdown("**Cross-Tabulation Summary:**")
         ct_display = pd.crosstab(filtered_df["family_history"], filtered_df["treatment"], normalize="index") * 100
         st.dataframe(ct_display.round(1).astype(str) + "%", use_container_width=True)
+        
+        # Calculate dynamic percentages for Family History
+        fam_y_pct, fam_n_pct, fam_y_n = get_group_treatment_stats(filtered_df, "family_history", "Yes")
+        nofam_y_pct, nofam_n_pct, nofam_y_n = get_group_treatment_stats(filtered_df, "family_history", "No")
+
+        fam_y_text = f"{format_pct(fam_y_pct)} Yes treatment vs {format_pct(fam_n_pct)} No (n={fam_y_n:,})" if fam_y_n > 0 else "No records in current filter"
+        fam_n_text = f"{format_pct(nofam_y_pct)} Yes treatment vs {format_pct(nofam_n_pct)} No (n={nofam_y_n:,})" if nofam_y_n > 0 else "No records in current filter"
+
         st.markdown(
-            """
+            f"""
             <div class="insight-card">
-                <strong>Observed Pattern:</strong><br>
-                Respondents with a <strong>family history</strong> of mental health conditions showed a substantially higher proportion of treatment responses:
-                <br>• <strong>Family History = Yes:</strong> ~76% Yes treatment vs ~24% No.
-                <br>• <strong>Family History = No:</strong> ~35% Yes treatment vs ~64% No.
+                <strong>Observed Pattern (Dynamic):</strong><br>
+                Respondents with a <strong>family history</strong> of mental health conditions showed higher treatment seeking:
+                <br>• <strong>Family History = Yes:</strong> {fam_y_text}
+                <br>• <strong>Family History = No:</strong> {fam_n_text}
             </div>
             """,
             unsafe_allow_html=True,
@@ -711,6 +792,7 @@ elif menu == "Mental Health & Treatment":
                 palette=["#94A3B8", "#7C3AED"]
             )
             st.pyplot(fig_gen)
+            plt.close(fig_gen)
         else:
             fig, ax = plt.subplots(figsize=(7, 4.2))
             sns.countplot(
@@ -727,19 +809,30 @@ elif menu == "Mental Health & Treatment":
             ax.set_ylabel("Count")
             plt.tight_layout()
             st.pyplot(fig)
+            plt.close(fig)
 
     with col_g2:
         st.markdown("**Cross-Tabulation Summary:**")
         ct_g_display = pd.crosstab(filtered_df["Gender_Clean"], filtered_df["treatment"], normalize="index") * 100
         st.dataframe(ct_g_display.round(1).astype(str) + "%", use_container_width=True)
+
+        # Calculate dynamic percentages for Gender
+        fem_y, fem_n, fem_cnt = get_group_treatment_stats(filtered_df, "Gender_Clean", "Female")
+        male_y, male_n, male_cnt = get_group_treatment_stats(filtered_df, "Gender_Clean", "Male")
+        oth_y, oth_n, oth_cnt = get_group_treatment_stats(filtered_df, "Gender_Clean", "Other")
+
+        f_txt = f"{format_pct(fem_y)} Yes treatment vs {format_pct(fem_n)} No (n={fem_cnt:,})" if fem_cnt > 0 else "No records"
+        m_txt = f"{format_pct(male_y)} Yes treatment vs {format_pct(male_n)} No (n={male_cnt:,})" if male_cnt > 0 else "No records"
+        o_txt = f"{format_pct(oth_y)} Yes treatment vs {format_pct(oth_n)} No (n={oth_cnt:,})" if oth_cnt > 0 else "No records"
+
         st.markdown(
-            """
+            f"""
             <div class="insight-card">
-                <strong>Observed Pattern:</strong><br>
-                • <strong>Female:</strong> ~68% Yes treatment vs ~30% No.<br>
-                • <strong>Male:</strong> ~42% Yes treatment vs ~53% No.<br>
-                • <strong>Other:</strong> ~65% Yes treatment vs ~28% No.<br>
-                Female and non-binary/other respondents showed higher proportions of receiving treatment compared to male respondents.
+                <strong>Observed Pattern (Dynamic):</strong><br>
+                • <strong>Female:</strong> {f_txt}<br>
+                • <strong>Male:</strong> {m_txt}<br>
+                • <strong>Other:</strong> {o_txt}<br>
+                In the active subset, female and other gender identities demonstrate distinct proportions compared to male respondents.
             </div>
             """,
             unsafe_allow_html=True,
@@ -761,6 +854,7 @@ elif menu == "Mental Health & Treatment":
                 palette=["#94A3B8", "#059669"]
             )
             st.pyplot(fig_age)
+            plt.close(fig_age)
         else:
             fig, ax = plt.subplots(figsize=(7, 4.2))
             sns.countplot(
@@ -777,21 +871,27 @@ elif menu == "Mental Health & Treatment":
             ax.set_ylabel("Count")
             plt.tight_layout()
             st.pyplot(fig)
+            plt.close(fig)
 
     with col_a2:
         st.markdown("**Cross-Tabulation Summary:**")
         ct_a_display = pd.crosstab(filtered_df["Age_Group"], filtered_df["treatment"], normalize="index") * 100
         st.dataframe(ct_a_display.round(1).astype(str) + "%", use_container_width=True)
+
+        # Dynamic age groups breakdown
+        age_lines = []
+        for ag in ["18-25", "26-35", "36-45", "46-55", "56-65", "66+"]:
+            y_p, _, cnt = get_group_treatment_stats(filtered_df, "Age_Group", ag)
+            if cnt > 0:
+                age_lines.append(f"• <strong>{ag}:</strong> {format_pct(y_p)} Yes treatment (n={cnt:,})")
+        age_dynamic_text = "<br>".join(age_lines) if age_lines else "No age group data in selection."
+
         st.markdown(
-            """
+            f"""
             <div class="insight-card">
-                <strong>Observed Pattern:</strong><br>
-                • <strong>18–25:</strong> ~48% Yes treatment.<br>
-                • <strong>26–35:</strong> ~47% Yes treatment.<br>
-                • <strong>36–45:</strong> ~53% Yes treatment.<br>
-                • <strong>46–55:</strong> ~55% Yes treatment.<br>
-                • <strong>56–65:</strong> ~59% Yes treatment.<br>
-                • <strong>66+:</strong> mostly Yes, but this group has very few respondents and should not be overinterpreted.
+                <strong>Observed Pattern (Dynamic):</strong><br>
+                {age_dynamic_text}<br>
+                <em>(66+ is a small cohort and should not be overinterpreted).</em>
             </div>
             """,
             unsafe_allow_html=True,
@@ -820,50 +920,69 @@ elif menu == "Workplace Factors":
         unsafe_allow_html=True,
     )
 
+    if len(filtered_df) == 0:
+        st.warning("⚠️ No records match the selected filter criteria. Please adjust or reset the sidebar filters.")
+        st.stop()
+
     # 1. Work Interference vs Treatment
     st.markdown("### 1. Work Interference vs Mental Health Treatment")
     col_w1, col_w2 = st.columns([1.3, 1])
     
     with col_w1:
-        order_wi = ["Never", "Rarely", "Sometimes", "Often"]
+        order_wi = [lvl for lvl in ["Never", "Rarely", "Sometimes", "Often"] if lvl in filtered_df["work_interfere"].values]
+        if not order_wi:
+            order_wi = filtered_df["work_interfere"].dropna().unique().tolist()
+            
         wi_df = filtered_df[filtered_df["work_interfere"].isin(order_wi)].copy()
         
-        fig, ax = plt.subplots(figsize=(8.5, 4.6))
-        ct_wi = pd.crosstab(wi_df["work_interfere"], wi_df["treatment"], normalize="index") * 100
-        ct_wi = ct_wi.reindex(order_wi)
-        ct_wi.plot(
-            kind="bar",
-            ax=ax,
-            color=["#94A3B8", "#EA580C"],
-            edgecolor="black",
-            linewidth=0.6,
-            width=0.65
-        )
-        ax.set_title("Work Interference vs Treatment Percentage", fontweight="bold")
-        ax.set_xlabel("Work Interference Level")
-        ax.set_ylabel("Percentage of Respondents (%)")
-        ax.set_xticklabels(order_wi, rotation=0)
-        ax.set_ylim(0, 100)
-        ax.legend(title="Treatment")
-        for p in ax.patches:
-            h = p.get_height()
-            if h > 4:
-                ax.annotate(f"{h:.1f}%", (p.get_x() + p.get_width() / 2, h / 2), ha="center", va="center", color="white", fontweight="bold", fontsize=9)
-        plt.tight_layout()
-        st.pyplot(fig)
+        if len(wi_df) > 0 and wi_df["treatment"].nunique() > 0:
+            fig, ax = plt.subplots(figsize=(8.5, 4.6))
+            ct_wi = pd.crosstab(wi_df["work_interfere"], wi_df["treatment"], normalize="index") * 100
+            ct_wi = ct_wi.reindex([x for x in ["Never", "Rarely", "Sometimes", "Often"] if x in ct_wi.index])
+            ct_wi.plot(
+                kind="bar",
+                ax=ax,
+                color=["#94A3B8", "#EA580C"],
+                edgecolor="black",
+                linewidth=0.6,
+                width=0.65
+            )
+            ax.set_title("Work Interference vs Treatment Percentage", fontweight="bold")
+            ax.set_xlabel("Work Interference Level")
+            ax.set_ylabel("Percentage of Respondents (%)")
+            ax.set_xticklabels(ct_wi.index, rotation=0)
+            ax.set_ylim(0, 100)
+            ax.legend(title="Treatment")
+            for p in ax.patches:
+                h = p.get_height()
+                if h > 4:
+                    ax.annotate(f"{h:.1f}%", (p.get_x() + p.get_width() / 2, h / 2), ha="center", va="center", color="white", fontweight="bold", fontsize=9)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.info("No work interference records available for current filter selection.")
+            ct_wi = pd.DataFrame()
 
     with col_w2:
         st.markdown("**Interference Level Breakdown:**")
-        st.dataframe(ct_wi.round(1).astype(str) + "%", use_container_width=True)
+        if not ct_wi.empty:
+            st.dataframe(ct_wi.round(1).astype(str) + "%", use_container_width=True)
+        
+        # Dynamic Work Interference Insight
+        wi_lines = []
+        for lvl in ["Never", "Rarely", "Sometimes", "Often"]:
+            y_pct, n_pct, cnt = get_group_treatment_stats(filtered_df, "work_interfere", lvl)
+            if cnt > 0:
+                wi_lines.append(f"• <strong>{lvl}:</strong> {format_pct(y_pct)} Yes treatment (n={cnt:,})")
+        wi_dynamic_text = "<br>".join(wi_lines) if wi_lines else "No records available for active filters."
+
         st.markdown(
-            """
+            f"""
             <div class="insight-card">
-                <strong>Observed Relationship:</strong><br>
-                • <strong>Never:</strong> Predominantly No treatment (~14% Yes, ~86% No).<br>
-                • <strong>Rarely:</strong> Treatment rate rises (~71% Yes).<br>
-                • <strong>Sometimes:</strong> Treatment rate is elevated (~77% Yes).<br>
-                • <strong>Often:</strong> Highest treatment seeking (~87% Yes, ~13% No).<br>
-                Employees experiencing higher work interference report significantly higher rates of seeking treatment.
+                <strong>Observed Relationship (Dynamic):</strong><br>
+                {wi_dynamic_text}<br>
+                Respondents experiencing higher work interference report significantly higher rates of seeking treatment.
             </div>
             """,
             unsafe_allow_html=True,
@@ -876,44 +995,60 @@ elif menu == "Workplace Factors":
     col_b1, col_b2 = st.columns([1.3, 1])
 
     with col_b1:
-        order_ben = ["Yes", "No", "Don't know"]
+        order_ben = [b for b in ["Yes", "No", "Don't know"] if b in filtered_df["benefits"].values]
+        if not order_ben:
+            order_ben = filtered_df["benefits"].dropna().unique().tolist()
+            
         ben_df = filtered_df[filtered_df["benefits"].isin(order_ben)].copy()
         
-        fig, ax = plt.subplots(figsize=(8.5, 4.6))
-        ct_ben = pd.crosstab(ben_df["benefits"], ben_df["treatment"], normalize="index") * 100
-        ct_ben = ct_ben.reindex(order_ben)
-        ct_ben.plot(
-            kind="bar",
-            ax=ax,
-            color=["#94A3B8", "#0284C7"],
-            edgecolor="black",
-            linewidth=0.6,
-            width=0.65
-        )
-        ax.set_title("Availability of Mental Health Benefits vs Treatment", fontweight="bold")
-        ax.set_xlabel("Mental Health Benefits Provided")
-        ax.set_ylabel("Percentage of Respondents (%)")
-        ax.set_xticklabels(order_ben, rotation=0)
-        ax.set_ylim(0, 100)
-        ax.legend(title="Treatment")
-        for p in ax.patches:
-            h = p.get_height()
-            if h > 4:
-                ax.annotate(f"{h:.1f}%", (p.get_x() + p.get_width() / 2, h / 2), ha="center", va="center", color="white", fontweight="bold", fontsize=9)
-        plt.tight_layout()
-        st.pyplot(fig)
+        if len(ben_df) > 0 and ben_df["treatment"].nunique() > 0:
+            fig, ax = plt.subplots(figsize=(8.5, 4.6))
+            ct_ben = pd.crosstab(ben_df["benefits"], ben_df["treatment"], normalize="index") * 100
+            ct_ben = ct_ben.reindex([b for b in ["Yes", "No", "Don't know"] if b in ct_ben.index])
+            ct_ben.plot(
+                kind="bar",
+                ax=ax,
+                color=["#94A3B8", "#0284C7"],
+                edgecolor="black",
+                linewidth=0.6,
+                width=0.65
+            )
+            ax.set_title("Availability of Mental Health Benefits vs Treatment", fontweight="bold")
+            ax.set_xlabel("Mental Health Benefits Provided")
+            ax.set_ylabel("Percentage of Respondents (%)")
+            ax.set_xticklabels(ct_ben.index, rotation=0)
+            ax.set_ylim(0, 100)
+            ax.legend(title="Treatment")
+            for p in ax.patches:
+                h = p.get_height()
+                if h > 4:
+                    ax.annotate(f"{h:.1f}%", (p.get_x() + p.get_width() / 2, h / 2), ha="center", va="center", color="white", fontweight="bold", fontsize=9)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        else:
+            st.info("No benefits records available for current filter selection.")
+            ct_ben = pd.DataFrame()
 
     with col_b2:
         st.markdown("**Benefits Breakdown:**")
-        st.dataframe(ct_ben.round(1).astype(str) + "%", use_container_width=True)
+        if not ct_ben.empty:
+            st.dataframe(ct_ben.round(1).astype(str) + "%", use_container_width=True)
+
+        # Dynamic Benefits Insight
+        ben_lines = []
+        for b in ["Yes", "No", "Don't know"]:
+            y_pct, n_pct, cnt = get_group_treatment_stats(filtered_df, "benefits", b)
+            if cnt > 0:
+                ben_lines.append(f"• <strong>{b}:</strong> {format_pct(y_pct)} Yes treatment (n={cnt:,})")
+        ben_dynamic_text = "<br>".join(ben_lines) if ben_lines else "No records available for active filters."
+
         st.markdown(
-            """
+            f"""
             <div class="insight-card">
-                <strong>Observed Pattern:</strong><br>
-                • <strong>Benefits = Yes:</strong> ~63% Yes treatment, ~35% No.<br>
-                • <strong>Benefits = No:</strong> ~47% Yes treatment, ~51% No.<br>
-                • <strong>Benefits = Don't Know:</strong> ~37% Yes treatment, ~63% No.<br>
-                Employees in workplaces with known benefits report higher treatment proportions. Uncertainty ('Don't know') highlights an awareness gap.
+                <strong>Observed Pattern (Dynamic):</strong><br>
+                {ben_dynamic_text}<br>
+                Employees in workplaces with known benefits report higher treatment proportions.
             </div>
             """,
             unsafe_allow_html=True,
@@ -928,24 +1063,27 @@ elif menu == "Workplace Factors":
     with wp_col1:
         st.markdown("**Care Options Awareness**")
         care_counts = (filtered_df["care_options"].value_counts(normalize=True) * 100).round(1)
-        st.bar_chart(care_counts)
+        if not care_counts.empty:
+            st.bar_chart(care_counts)
         st.caption("Distribution of employer care option awareness.")
 
     with wp_col2:
         st.markdown("**Anonymity Protection**")
         anon_counts = (filtered_df["anonymity"].value_counts(normalize=True) * 100).round(1)
-        st.bar_chart(anon_counts)
+        if not anon_counts.empty:
+            st.bar_chart(anon_counts)
         st.caption("Perception of anonymity if seeking support.")
 
     with wp_col3:
         st.markdown("**Discussing with Supervisor**")
         sup_counts = (filtered_df["supervisor"].value_counts(normalize=True) * 100).round(1)
-        st.bar_chart(sup_counts)
+        if not sup_counts.empty:
+            st.bar_chart(sup_counts)
         st.caption("Comfort level discussing mental health with supervisor.")
 
 
 # =========================================================
-# 6. CORRELATION ANALYSIS PAGE
+# 6. CORRELATION ANALYSIS PAGE (FILTER-AWARE)
 # =========================================================
 elif menu == "Correlation Analysis":
     st.subheader("📊 Correlation Analysis & Selected Pairwise Relationships")
@@ -953,10 +1091,15 @@ elif menu == "Correlation Analysis":
         """
         Following the methodology of the EDA, key categorical indicators were binary encoded ($1 = \\text{Yes}, 0 = \\text{No}$)
         alongside Age to compute Pearson correlation coefficients and evaluate pairwise associations.
+        All calculations strictly reflect the currently active filters.
         """
     )
 
-    # Prepare correlation dataset
+    if len(filtered_df) < 2:
+        st.warning("⚠️ At least 2 records are required to calculate correlation. Please adjust or reset your filters.")
+        st.stop()
+
+    # Prepare correlation dataset based on FILTERED data
     corr_cols = [
         "Age",
         "treatment",
@@ -966,14 +1109,19 @@ elif menu == "Correlation Analysis":
         "obs_consequence"
     ]
     
-    corr_data = df_clean[corr_cols].copy()
+    corr_data = filtered_df[corr_cols].copy()
     for col in ["treatment", "family_history", "remote_work", "tech_company", "obs_consequence"]:
         corr_data[col] = corr_data[col].map({"Yes": 1, "No": 0})
     
     corr_matrix = corr_data.corr()
 
+    # Check for invariant columns due to active filters
+    nan_cols = [c for c in corr_matrix.columns if corr_matrix[c].isnull().all()]
+    if nan_cols:
+        st.info(f"ℹ️ Note: The following variable(s) have constant values under the current filter selection, yielding undefined (NaN) correlation: {', '.join(nan_cols)}.")
+
     # Heatmap visualization
-    st.markdown("### 1. Correlation Heatmap")
+    st.markdown("### 1. Correlation Heatmap (Filter-Aware)")
     fig, ax = plt.subplots(figsize=(8.5, 6.2))
     sns.heatmap(
         corr_matrix,
@@ -988,9 +1136,10 @@ elif menu == "Correlation Analysis":
         cbar_kws={"shrink": 0.8},
         ax=ax,
     )
-    ax.set_title("Correlation Heatmap of Selected Variables", fontsize=13, fontweight="bold", pad=12)
+    ax.set_title(f"Correlation Heatmap ({len(filtered_df):,} Filtered Records)", fontsize=13, fontweight="bold", pad=12)
     plt.tight_layout()
     st.pyplot(fig)
+    plt.close(fig)
 
     st.markdown(
         """
@@ -1002,16 +1151,30 @@ elif menu == "Correlation Analysis":
         unsafe_allow_html=True,
     )
 
+    # Dynamic correlation extraction
+    def get_corr_text(c1, c2):
+        if c1 in corr_matrix.columns and c2 in corr_matrix.index:
+            v = corr_matrix.loc[c1, c2]
+            if pd.notnull(v):
+                return f"r = {v:.2f}"
+        return "N/A (constant value under active filters)"
+
+    r_fam_trt = get_corr_text("family_history", "treatment")
+    r_trt_obs = get_corr_text("treatment", "obs_consequence")
+    r_age_rem = get_corr_text("Age", "remote_work")
+    r_age_fam = get_corr_text("Age", "family_history")
+    r_rem_obs = get_corr_text("remote_work", "obs_consequence")
+
     st.markdown(
-        """
+        f"""
         <div class="insight-card">
-            <strong>Key Observed Correlation Findings:</strong><br>
-            • <strong>family_history vs treatment (≈ 0.38):</strong> The strongest observed positive association in the dataset.<br>
-            • <strong>treatment vs obs_consequence (≈ 0.16):</strong> Modest positive association between seeking treatment and observing negative consequences for coworkers.<br>
-            • <strong>Age vs remote_work (≈ 0.15):</strong> Slight positive tendency for older tech workers to work remotely.<br>
-            • <strong>Age vs family_history (≈ 0.01):</strong> Essentially zero correlation.<br>
-            • <strong>remote_work vs obs_consequence (≈ -0.04):</strong> Very weak negative association.<br>
-            • Most other pairwise correlations among these variables are close to zero.
+            <strong>Key Observed Correlation Findings in Active Selection (Dynamic):</strong><br>
+            • <strong>family_history vs treatment:</strong> {r_fam_trt} (consistently the strongest associative predictor).<br>
+            • <strong>treatment vs obs_consequence:</strong> {r_trt_obs} (modest association with observed consequences).<br>
+            • <strong>Age vs remote_work:</strong> {r_age_rem}<br>
+            • <strong>Age vs family_history:</strong> {r_age_fam}<br>
+            • <strong>remote_work vs obs_consequence:</strong> {r_rem_obs}<br>
+            • Most other pairwise relationships remain weak (|r| < 0.10).
         </div>
         """,
         unsafe_allow_html=True,
@@ -1024,7 +1187,7 @@ elif menu == "Correlation Analysis":
     st.write(
         """
         The pair plot illustrates the pairwise bivariate distributions and univariate histograms
-        for `Age`, `treatment`, `family_history`, `remote_work`, and `tech_company`.
+        for `Age`, `treatment`, `family_history`, `remote_work`, and `tech_company` on the filtered dataset.
         """
     )
 
@@ -1033,29 +1196,33 @@ elif menu == "Correlation Analysis":
     if render_pairplot:
         with st.spinner("Generating Pair Plot..."):
             pair_vars = ["Age", "treatment", "family_history", "remote_work", "tech_company"]
-            pair_data = df_clean[pair_vars].copy()
+            pair_data = filtered_df[pair_vars].copy()
             for col in ["treatment", "family_history", "remote_work", "tech_company"]:
                 pair_data[col] = pair_data[col].map({"Yes": 1, "No": 0})
             pair_data = pair_data.dropna()
 
-            pair_fig = sns.pairplot(
-                pair_data,
-                diag_kind="hist",
-                plot_kws={"alpha": 0.6, "s": 30, "color": "#2563EB"},
-                diag_kws={"color": "#3B82F6", "bins": 15}
-            )
-            pair_fig.fig.suptitle("Pair Plot of Selected Variables", y=1.02, fontsize=14, fontweight="bold")
-            st.pyplot(pair_fig.fig)
+            if len(pair_data) >= 3:
+                pair_fig = sns.pairplot(
+                    pair_data,
+                    diag_kind="hist",
+                    plot_kws={"alpha": 0.6, "s": 30, "color": "#2563EB"},
+                    diag_kws={"color": "#3B82F6", "bins": 15}
+                )
+                pair_fig.fig.suptitle("Pair Plot of Selected Variables (Filtered)", y=1.02, fontsize=14, fontweight="bold")
+                st.pyplot(pair_fig.fig)
+                plt.close(pair_fig.fig)
+            else:
+                st.warning("Insufficient complete records available to plot pairwise distributions.")
     else:
         st.info("💡 To view the Pair Plot, toggle the checkbox above.")
 
 
 # =========================================================
-# 7. KEY INSIGHTS PAGE
+# 7. KEY INSIGHTS PAGE (DYNAMIC & FILTER-AWARE)
 # =========================================================
 elif menu == "Key Insights":
     st.subheader("💡 Key Insights from the EDA")
-    st.write("A structured, evidence-based summary of the primary analytical discoveries observed in the 2014 survey.")
+    st.write("A structured, evidence-based summary of analytical discoveries calculated directly from the currently filtered dataset.")
 
     st.markdown(
         """
@@ -1067,36 +1234,65 @@ elif menu == "Key Insights":
         unsafe_allow_html=True,
     )
 
+    if len(filtered_df) == 0:
+        st.warning("⚠️ No records match the selected filter criteria. Please adjust or reset the sidebar filters.")
+        st.stop()
+
+    # Dynamic metrics computation
+    fam_y_pct, _, fam_y_n = get_group_treatment_stats(filtered_df, "family_history", "Yes")
+    nofam_y_pct, _, nofam_y_n = get_group_treatment_stats(filtered_df, "family_history", "No")
+
+    fem_y, _, fem_cnt = get_group_treatment_stats(filtered_df, "Gender_Clean", "Female")
+    male_y, _, male_cnt = get_group_treatment_stats(filtered_df, "Gender_Clean", "Male")
+    oth_y, _, oth_cnt = get_group_treatment_stats(filtered_df, "Gender_Clean", "Other")
+
+    wi_never_y, _, wi_never_n = get_group_treatment_stats(filtered_df, "work_interfere", "Never")
+    wi_often_y, _, wi_often_n = get_group_treatment_stats(filtered_df, "work_interfere", "Often")
+
+    ben_yes_y, _, ben_yes_n = get_group_treatment_stats(filtered_df, "benefits", "Yes")
+    ben_no_y, _, ben_no_n = get_group_treatment_stats(filtered_df, "benefits", "No")
+    ben_dk_y, _, ben_dk_n = get_group_treatment_stats(filtered_df, "benefits", "Don't know")
+
+    # Correlations
+    corr_cols = ["Age", "treatment", "family_history", "remote_work", "tech_company", "obs_consequence"]
+    c_df = filtered_df[corr_cols].copy()
+    for col in ["treatment", "family_history", "remote_work", "tech_company", "obs_consequence"]:
+        c_df[col] = c_df[col].map({"Yes": 1, "No": 0})
+    curr_cmat = c_df.corr()
+    
+    r_val = curr_cmat.loc["family_history", "treatment"] if ("family_history" in curr_cmat and "treatment" in curr_cmat) else np.nan
+    r_str = f"r = {r_val:.2f}" if pd.notnull(r_val) else "N/A"
+
     insights = [
         {
             "num": "01",
             "title": "Family History is the Strongest Associative Predictor of Treatment",
-            "desc": "Respondents with a family history of mental health challenges sought treatment at more than double the rate of those without (approx. 76% Yes vs 35% Yes). This also produced the highest linear correlation in the dataset (r ≈ 0.38)."
+            "desc": f"In the current selection, respondents with a family history sought treatment at {format_pct(fam_y_pct)} (n={fam_y_n:,}), compared to {format_pct(nofam_y_pct)} (n={nofam_y_n:,}) among those without. The observed linear correlation in this subset is {r_str}."
         },
         {
             "num": "02",
             "title": "Clear Gender Disparities in Treatment Rates",
-            "desc": "Female (~68%) and non-binary/other respondents (~65%) demonstrated significantly higher rates of seeking treatment than male respondents (~42%), despite males representing nearly 80% of the surveyed workforce."
+            "desc": f"Treatment rates vary distinctly across gender classifications in this selection: Female = {format_pct(fem_y)} (n={fem_cnt:,}), Male = {format_pct(male_y)} (n={male_cnt:,}), and Other = {format_pct(oth_y)} (n={oth_cnt:,})."
         },
         {
             "num": "03",
-            "title": "Gradual Age Progression in Treatment Likelihood",
-            "desc": "Treatment prevalence rose progressively across working age brackets, from ~48% in the 18–25 group to ~59% in the 56–65 group. (The 66+ bracket has very few respondents and should not be generalized)."
+            "title": "Age Progression in Treatment Likelihood",
+            "desc": "Treatment seeking demonstrates a steady upward progression through working age cohorts, with the largest volume of respondents concentrated in the 26–35 and 36–45 brackets."
         },
         {
             "num": "04",
             "title": "Direct Relationship Between Work Interference and Treatment Seeking",
-            "desc": "As mental health interference at work increases in frequency, treatment seeking rises dramatically: from ~14% among those who reported 'Never' to approximately 87% among those reporting 'Often'."
+            "desc": f"Frequency of work interference strongly aligns with treatment prevalence: respondents reporting 'Never' have a {format_pct(wi_never_y)} treatment rate (n={wi_never_n:,}), whereas those reporting 'Often' have a {format_pct(wi_often_y)} treatment rate (n={wi_often_n:,})."
         },
         {
             "num": "05",
             "title": "Workplace Benefits Presence vs. Employee Awareness Gap",
-            "desc": "Employees in companies offering mental health benefits sought treatment at a higher rate (~63%) compared to those without (~47%). Notably, employees who answered 'Don't know' had the lowest rate (~37%), pointing to a critical information gap."
+            "desc": f"Employees reporting available workplace benefits sought treatment at {format_pct(ben_yes_y)} (n={ben_yes_n:,}), those without benefits sought treatment at {format_pct(ben_no_y)} (n={ben_no_n:,}), while those responding 'Don't know' registered {format_pct(ben_dk_y)} (n={ben_dk_n:,}), illustrating an information access divide."
         },
         {
             "num": "06",
-            "title": "Weak Multivariable Correlations Across Employment Features",
-            "desc": "Most employment characteristics (such as remote work status or tech company classification) showed very weak linear correlation with treatment seeking (|r| < 0.10), indicating that personal context and workplace culture are far more relevant than remote work arrangements."
+            "title": "Weak Multivariable Correlations Across Employment Arrangements",
+            "desc": "Arrangements like remote work or tech company classification demonstrate minimal direct linear association with treatment seeking, suggesting workplace culture and personal support matter more than remote status."
         }
     ]
 
@@ -1139,12 +1335,12 @@ elif menu == "Business Recommendations":
         {
             "icon": "📢",
             "title": "1. Improve Awareness of Mental Health Resources and Benefit Offerings",
-            "body": "A large portion of employees responded 'Don't know' regarding available benefits, and this group had the lowest treatment rate (~37%). Organizations must proactively communicate available employee assistance programs (EAPs), mental health coverage, and wellness benefits during onboarding and via recurring company channels."
+            "body": "A substantial portion of tech workers respond 'Don't know' regarding available benefits, and this group exhibits the lowest treatment rates. Organizations must proactively publicize employee assistance programs (EAPs), mental health coverage, and wellness benefits during onboarding and via routine company communications."
         },
         {
             "icon": "🩺",
             "title": "2. Make Mental Health Benefits and Care Options Easier to Access",
-            "body": "Survey responses demonstrated higher treatment seeking among workers with clear access to employer benefits (~63%). Ensuring that healthcare plans include accessible therapy coverage, low copays, and streamlined navigation removes structural barriers to care."
+            "body": "Survey responses demonstrate higher treatment seeking among workers with confirmed access to employer benefits. Ensuring healthcare plans include accessible therapy coverage, low copays, and streamlined navigation removes structural barriers to care."
         },
         {
             "icon": "🔒",
@@ -1164,7 +1360,7 @@ elif menu == "Business Recommendations":
         {
             "icon": "⚡",
             "title": "6. Proactively Address and Support Work Interference Concerns",
-            "body": "Because work interference strongly correlates with higher treatment seeking (~87% treatment for employees experiencing frequent interference), organizations should create early-intervention pathways, workload adjustments, and supportive return-to-work frameworks."
+            "body": "Because work interference strongly correlates with higher treatment seeking (especially among employees reporting frequent interference), organizations should establish early-intervention pathways, workload adjustments, and supportive return-to-work frameworks."
         }
     ]
 
